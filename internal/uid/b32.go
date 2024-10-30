@@ -1,98 +1,129 @@
 package uid
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
-var encodingAlphabet = map[int]byte{
+// bitPump is the core of the bit encoder and decoder. It reads bytes from the src, decodes them into integer chunks and
+// adds them to the buffer. Whenever the buffer has enough content for an output chunk, we read it, convert it to a byte
+// and then write it.
+func bitPump(src io.ByteReader, srcDecoder map[byte]int, srcChunkSize int, dropExtra bool, dstChunkSize int, dstEncoder map[int]byte, dst io.ByteWriter) (int64, error) {
+	// Setup some initial assignments
+	rem, remBits, i, b, ok, written, err := 0, 0, 0, byte(0), false, int64(0), error(nil)
+	// Now loop through the main body of the src stream. Reading bytes to fill in the buffer until we have enough for an output chunk.
+	for {
+		// If we have enough bits for an output chunk, let's produce one.
+		if remBits >= dstChunkSize {
+			// extract a dst chunk
+			remBits -= dstChunkSize
+			i = rem >> remBits
+			rem = rem & ((1 << remBits) - 1)
+			// encode it by converting the chunk to an output byte, if no alphabet is defined then just cast it.
+			if dstEncoder != nil {
+				if b, ok = dstEncoder[i]; !ok {
+					return written, fmt.Errorf("unknown dst alphabet: %v", b)
+				}
+			} else {
+				b = byte(i)
+			}
+			// write the byte
+			if err = dst.WriteByte(b); err != nil {
+				return written, err
+			}
+			written += 1
+		} else {
+			// if we don't have enough data, read a chunk from the input stream
+			if b, err = src.ReadByte(); err != nil {
+				// If we have an EOF here, then we have to break, because we know we don't have enough
+				// for a complete chunk.
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				return written, err
+			} else {
+				// now convert it into it's integer chunk or just cast it if no decoder is specified
+				if srcDecoder != nil {
+					i, ok = srcDecoder[b]
+					if !ok {
+						return written, fmt.Errorf("unknown src alphabet: %v", b)
+					}
+				} else {
+					i = int(b)
+				}
+				// add it to the buffer
+				rem = (rem << srcChunkSize) | i
+				remBits += srcChunkSize
+			}
+		}
+	}
+	// Now if we are left with some bits in the buffer, we either need to pad them with 0's in order to produce enough
+	// content, or we must just drop it if it's nil data (usually during decoding).
+	if remBits > 0 && (!dropExtra || rem > 0) {
+		// read the chunk
+		i = rem << (dstChunkSize - remBits)
+		// convert it to an output byte using the encoder or cast
+		if dstEncoder != nil {
+			b, ok = dstEncoder[i]
+			if !ok {
+				return written, fmt.Errorf("unknown dst alphabet: %v", b)
+			}
+		} else {
+			b = byte(i)
+		}
+		if err = dst.WriteByte(b); err != nil {
+			return written, err
+		}
+		written += 1
+	}
+	return written, nil
+}
+
+var b32Encoding = map[int]byte{
 	0: '0', 1: '1', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6', 7: '7',
 	8: '8', 9: '9', 10: 'A', 11: 'B', 12: 'C', 13: 'D', 14: 'E', 15: 'F',
 	16: 'G', 17: 'H', 18: 'J', 19: 'K', 20: 'M', 21: 'N', 22: 'P', 23: 'Q',
 	24: 'R', 25: 'S', 26: 'T', 27: 'V', 28: 'W', 29: 'X', 30: 'Y', 31: 'Z',
 }
 
-var decodingAlphabet map[byte]byte
+var b32Decoding map[byte]int
 
 func init() {
-	decodingAlphabet = make(map[byte]byte, len(encodingAlphabet))
-	decodingAlphabet['O'] = 0
-	decodingAlphabet['I'] = 1
-	decodingAlphabet['L'] = 1
-	for i, b := range encodingAlphabet {
-		decodingAlphabet[b] = byte(i)
+	b32Decoding = make(map[byte]int, len(b32Encoding))
+	b32Decoding['O'] = 0
+	b32Decoding['I'] = 1
+	b32Decoding['L'] = 1
+	for i, b := range b32Encoding {
+		b32Decoding[b] = i
 		if b >= 'A' && b <= 'Z' {
-			decodingAlphabet[b+32] = byte(i)
+			b32Decoding[b+32] = i
 		}
 	}
 }
 
-func EncodeB32(dst io.ByteWriter, src io.ByteReader) (written int64, err error) {
-	rem, remBits := 0, 0
-	for {
-		if remBits < 5 {
-			if b, err := src.ReadByte(); err != nil {
-				if err == io.EOF {
-					break
-				}
-				return written, err
-			} else {
-				rem = (rem << 8) | int(b)
-				remBits += 8
-			}
-		}
-		remBits -= 5
-		ob := encodingAlphabet[rem>>remBits]
-		rem = rem & ((1 << remBits) - 1)
-		if err := dst.WriteByte(ob); err != nil {
-			return written, err
-		}
-		written += 1
-	}
-	if remBits > 0 {
-		if err := dst.WriteByte(encodingAlphabet[rem<<(5-remBits)]); err != nil {
-			return written, err
-		}
-		written += 1
-	}
-	return written, nil
+func EncodeCB32(dst io.ByteWriter, src io.ByteReader) (written int64, err error) {
+	return bitPump(src, nil, 8, false, 5, b32Encoding, dst)
 }
 
-func DecodeB32(dst io.ByteWriter, src io.ByteReader) (written int64, err error) {
-	rem, remBits := 0, 0
-	for {
-		// If we successfully have at least 8 bits then we can convert them. Otherwise, we return to our loop.
-		if remBits >= 8 {
-			remBits -= 8
-			ob := byte(rem >> remBits)
-			if err := dst.WriteByte(ob); err != nil {
-				return written, err
-			}
-			rem = rem & ((1 << remBits) - 1)
-			written += 1
-		}
+func DecodeCB32(dst io.ByteWriter, src io.ByteReader) (written int64, err error) {
+	return bitPump(src, b32Decoding, 5, true, 8, nil, dst)
+}
 
-		// Each base32 byte we read passes through the decoding alphabet and produces 5 bits which we add to our
-		// remaining bit set. We continue doing this until we have at least 8 bits or we reach EOF.
-		if b, err := src.ReadByte(); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return written, err
-		} else {
-			i, ok := decodingAlphabet[b]
-			if !ok {
-				return written, fmt.Errorf("unknown alphabet: %v", b)
-			}
-			rem = (rem << 5) | int(i)
-			remBits += 5
-		}
+func EncodeCB32String(in []byte) (string, error) {
+	sb := bytes.NewBuffer(make([]byte, 0, len(in)*2))
+	if _, err := EncodeCB32(sb, bytes.NewReader(in)); err != nil {
+		return "", err
 	}
-	if remBits > 0 && rem > 0 {
-		if err := dst.WriteByte(byte(rem)); err != nil {
-			return written, err
-		}
-		written += 1
+	return sb.String(), nil
+}
+
+func DecodeCB32String(in string) ([]byte, error) {
+	sb := bytes.NewBuffer(make([]byte, 0, len(in)))
+	if _, err := DecodeCB32(sb, strings.NewReader(in)); err != nil {
+		return nil, err
 	}
-	return written, nil
+	return sb.Bytes(), nil
 }
