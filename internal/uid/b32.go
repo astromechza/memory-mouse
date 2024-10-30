@@ -82,34 +82,34 @@ func bitPump(src io.ByteReader, srcDecoder map[byte]int, srcChunkSize int, dropE
 	return written, nil
 }
 
-var b32Encoding = map[int]byte{
+var cb32Encoding = map[int]byte{
 	0: '0', 1: '1', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6', 7: '7',
 	8: '8', 9: '9', 10: 'A', 11: 'B', 12: 'C', 13: 'D', 14: 'E', 15: 'F',
 	16: 'G', 17: 'H', 18: 'J', 19: 'K', 20: 'M', 21: 'N', 22: 'P', 23: 'Q',
 	24: 'R', 25: 'S', 26: 'T', 27: 'V', 28: 'W', 29: 'X', 30: 'Y', 31: 'Z',
 }
 
-var b32Decoding map[byte]int
+var cb32Decoding map[byte]int
 
 func init() {
-	b32Decoding = make(map[byte]int, len(b32Encoding))
-	b32Decoding['O'] = 0
-	b32Decoding['I'] = 1
-	b32Decoding['L'] = 1
-	for i, b := range b32Encoding {
-		b32Decoding[b] = i
+	cb32Decoding = make(map[byte]int, len(cb32Encoding))
+	cb32Decoding['O'] = 0
+	cb32Decoding['I'] = 1
+	cb32Decoding['L'] = 1
+	for i, b := range cb32Encoding {
+		cb32Decoding[b] = i
 		if b >= 'A' && b <= 'Z' {
-			b32Decoding[b+32] = i
+			cb32Decoding[b+32] = i
 		}
 	}
 }
 
 func EncodeCB32(dst io.ByteWriter, src io.ByteReader) (written int64, err error) {
-	return bitPump(src, nil, 8, false, 5, b32Encoding, dst)
+	return bitPump(src, nil, 8, false, 5, cb32Encoding, dst)
 }
 
 func DecodeCB32(dst io.ByteWriter, src io.ByteReader) (written int64, err error) {
-	return bitPump(src, b32Decoding, 5, true, 8, nil, dst)
+	return bitPump(src, cb32Decoding, 5, true, 8, nil, dst)
 }
 
 func EncodeCB32String(in []byte) (string, error) {
