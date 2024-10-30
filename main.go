@@ -58,6 +58,27 @@ func mainInner() error {
 	}()
 
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("POST /documents/", func(writer http.ResponseWriter, request *http.Request) {
+		// generate uid
+		// generate empty doc
+		// Persist doc to storage bucket under uid
+		// cacne doc in memory
+
+	})
+
+	mux.HandleFunc("GET /documents/", func(writer http.ResponseWriter, request *http.Request) {
+
+	})
+
+	mux.HandleFunc("DELETE /documents/{id}", func(writer http.ResponseWriter, request *http.Request) {
+
+	})
+
+	mux.HandleFunc("PUT /documents/{id}", func(writer http.ResponseWriter, request *http.Request) {
+
+	})
+
 	server := &http.Server{Handler: mux}
 	defer func() {
 		if err := server.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
