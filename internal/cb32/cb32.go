@@ -1,4 +1,4 @@
-package uid
+package cb32
 
 import (
 	"bytes"
