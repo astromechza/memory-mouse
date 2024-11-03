@@ -131,9 +131,9 @@ func (s *Storage) ListDocumentIds(ctx context.Context, projectId string) (docume
 	}
 }
 
-func (s *Storage) ListBlobs(ctx context.Context, projectId, documentId string) (blobIds []string, err error) {
+func (s *Storage) ListBlobs(ctx context.Context, projectId, documentId string) (blobs []storage.BlobIdAndSize, err error) {
 	slog.Debug("executing list blob ids query", slog.String("project", projectId), slog.String("document", documentId))
-	if r, err := s.reader.QueryContext(ctx, `SELECT blob_id FROM blobs WHERE project_id = $1 AND document_id = $2`, projectId, documentId); err != nil {
+	if r, err := s.reader.QueryContext(ctx, `SELECT blob_id, length(content) FROM blobs WHERE project_id = $1 AND document_id = $2`, projectId, documentId); err != nil {
 		return nil, fmt.Errorf("failed to perform list blob ids query: %w", err)
 	} else {
 		defer func() {
@@ -141,13 +141,14 @@ func (s *Storage) ListBlobs(ctx context.Context, projectId, documentId string) (
 				slog.Warn("failed to close query", slog.Any("err", err))
 			}
 		}()
-		out := make([]string, 0)
+		out := make([]storage.BlobIdAndSize, 0)
 		for r.Next() {
 			var id string
-			if err := r.Scan(&id); err != nil {
+			var size int64
+			if err := r.Scan(&id, &size); err != nil {
 				return nil, fmt.Errorf("failed to scan row: %w", err)
 			}
-			out = append(out, id)
+			out = append(out, storage.BlobIdAndSize{Id: id, Size: size})
 		}
 		if err := r.Err(); err != nil {
 			return nil, fmt.Errorf("failed to iterate rows: %w", err)
@@ -171,44 +172,46 @@ ON CONFLICT DO UPDATE SET meta_json = $4, content = $5`, projectId, documentId, 
 	return nil
 }
 
-func (s *Storage) GetBlob(ctx context.Context, projectId, documentId, blobId string, dst io.Writer) (n int, meta map[string]string, err error) {
+func (s *Storage) GetBlob(ctx context.Context, projectId, documentId, blobId string, dst io.Writer) (blob *storage.BlobIdSizeAndMeta, err error) {
 	slog.Debug("executing get blob", slog.String("project", projectId), slog.String("document", documentId), slog.String("blob", blobId))
 	var metaRaw string
-	var blob []byte
+	var content []byte
 	if err := s.reader.QueryRowContext(
 		ctx, `SELECT meta_json, content FROM blobs WHERE project_id = $1 AND document_id = $2 AND blob_id = $3`,
 		projectId, documentId, blobId,
-	).Scan(&metaRaw, &blob); err != nil {
+	).Scan(&metaRaw, &content); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, nil, storage.ErrBlobNotFound
+			return nil, storage.ErrBlobNotFound
 		}
-		return 0, nil, fmt.Errorf("failed to perform get blob query: %w", err)
+		return nil, fmt.Errorf("failed to perform get blob query: %w", err)
 	}
-	if err := json.Unmarshal([]byte(metaRaw), &meta); err != nil {
-		return 0, nil, fmt.Errorf("failed to decode metadata from blob query: %w", err)
-	} else if n, err := dst.Write(blob); err != nil {
-		return n, meta, fmt.Errorf("failed to write blob: %w", err)
+	out := &storage.BlobIdSizeAndMeta{BlobIdAndSize: storage.BlobIdAndSize{Id: blobId, Size: int64(len(content))}}
+	if err := json.Unmarshal([]byte(metaRaw), &out.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to decode metadata from blob query: %w", err)
+	} else if _, err := dst.Write(content); err != nil {
+		return nil, fmt.Errorf("failed to write blob: %w", err)
 	} else {
-		return n, meta, nil
+		return out, nil
 	}
 }
 
-func (s *Storage) HeadBlob(ctx context.Context, projectId, documentId, blobId string) (n int, meta map[string]string, err error) {
-	var metaRaw string
+func (s *Storage) HeadBlob(ctx context.Context, projectId, documentId, blobId string) (blob *storage.BlobIdSizeAndMeta, err error) {
 	slog.Debug("executing head blob", slog.String("project", projectId), slog.String("document", documentId), slog.String("blob", blobId))
+	var metaRaw string
+	out := &storage.BlobIdSizeAndMeta{BlobIdAndSize: storage.BlobIdAndSize{Id: blobId}}
 	if err := s.reader.QueryRowContext(
 		ctx, `SELECT meta_json, length(content) FROM blobs WHERE project_id = $1 AND document_id = $2 AND blob_id = $3`,
 		projectId, documentId, blobId,
-	).Scan(&metaRaw, &n); err != nil {
+	).Scan(&metaRaw, &out.Size); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, nil, storage.ErrBlobNotFound
+			return nil, storage.ErrBlobNotFound
 		}
-		return 0, nil, fmt.Errorf("failed to perform get blob query: %w", err)
+		return nil, fmt.Errorf("failed to perform get blob query: %w", err)
 	}
-	if err := json.Unmarshal([]byte(metaRaw), &meta); err != nil {
-		return 0, nil, fmt.Errorf("failed to decode metadata from blob query: %w", err)
+	if err := json.Unmarshal([]byte(metaRaw), &out.Metadata); err != nil {
+		return nil, fmt.Errorf("failed to decode metadata from blob query: %w", err)
 	}
-	return n, meta, nil
+	return out, nil
 }
 
 func (s *Storage) DeleteBlobs(ctx context.Context, projectId, documentId string, blobIds []string) error {

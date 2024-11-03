@@ -2,6 +2,7 @@ package testsupport
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -9,6 +10,22 @@ func AssertEqual[k any](t *testing.T, actual, expected k) bool {
 	t.Helper()
 	if !reflect.DeepEqual(actual, expected) {
 		t.Errorf("actual = %v, expected = %v", actual, expected)
+		return false
+	}
+	return true
+}
+
+func MustAssertEqual[k any](t *testing.T, actual, expected k) {
+	t.Helper()
+	if !AssertEqual(t, actual, expected) {
+		t.FailNow()
+	}
+}
+
+func AssertContains[E comparable](t *testing.T, container []E, item E) bool {
+	t.Helper()
+	if !slices.Contains(container, item) {
+		t.Errorf("item %v not found in container %v", item, container)
 		return false
 	}
 	return true
